@@ -1,19 +1,21 @@
 """
-Crawl fleetio.com and export every page's content to fleetio_pages.csv
-Columns: url, title, meta_description, h1, h2s, body_text
+Crawl fleetio.com and export every page's content to fleetio_pages.docx
+Each page gets a section with heading, URL, meta description, and body text.
 """
-import csv, re, time
+import re, time
 from collections import deque
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from docx import Document
+from docx.shared import Pt, RGBColor
 
 DOMAIN = "fleetio.com"
 START  = "https://www.fleetio.com/"
-OUT    = "fleetio_pages.csv"
-DELAY  = 0.5          # seconds between requests
-MAX    = 500          # safety cap
+OUT    = "fleetio_pages.docx"
+DELAY  = 0.5
+MAX    = 500
 
 HEADERS = {
     "User-Agent": (
@@ -53,66 +55,83 @@ def scrape(url):
 
     soup = BeautifulSoup(r.text, "lxml")
 
-    # collect outgoing links on same domain
     links = []
     for a in soup.find_all("a", href=True):
         href = urljoin(url, a["href"].split("#")[0].strip())
         if same_domain(href) and not SKIP_EXTS.search(href):
             links.append(href)
 
-    # remove nav / footer / script noise before extracting body text
     for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
         tag.decompose()
 
-    title       = clean(soup.title.get_text()) if soup.title else ""
-    meta_desc   = ""
+    title     = clean(soup.title.get_text()) if soup.title else url
+    meta_desc = ""
     md = soup.find("meta", attrs={"name": "description"})
     if md:
         meta_desc = clean(md.get("content", ""))
-    h1 = clean(soup.h1.get_text()) if soup.h1 else ""
-    h2s = " | ".join(clean(h.get_text()) for h in soup.find_all("h2"))
+    h1   = clean(soup.h1.get_text()) if soup.h1 else ""
+    h2s  = [clean(h.get_text()) for h in soup.find_all("h2")]
     body = clean(soup.get_text(" ", strip=True))
 
-    row = {
-        "url":              url,
-        "title":            title,
-        "meta_description": meta_desc,
-        "h1":               h1,
-        "h2s":              h2s,
-        "body_text":        body[:4000],   # cap per-cell size
-    }
-    return row, links
+    return {"url": url, "title": title, "meta_desc": meta_desc,
+            "h1": h1, "h2s": h2s, "body": body}, links
 
+
+# ── Build the Word document ──────────────────────────────────────────────────
+
+doc = Document()
+doc.core_properties.title = "Fleetio.com — Full Site Content"
+
+# Cover heading
+doc.add_heading("Fleetio.com — Full Site Content", 0)
+doc.add_paragraph(f"Scraped {time.strftime('%Y-%m-%d')}")
+doc.add_page_break()
 
 visited = set()
 queue   = deque([START])
-rows    = []
+count   = 0
 
-with open(OUT, "w", newline="", encoding="utf-8") as f:
-    writer = csv.DictWriter(
-        f,
-        fieldnames=["url", "title", "meta_description", "h1", "h2s", "body_text"],
-    )
-    writer.writeheader()
+while queue and len(visited) < MAX:
+    url = queue.popleft()
+    if url in visited:
+        continue
+    visited.add(url)
 
-    while queue and len(visited) < MAX:
-        url = queue.popleft()
-        if url in visited:
-            continue
-        visited.add(url)
+    print(f"[{len(visited):>3}] {url}")
+    data, links = scrape(url)
 
-        print(f"[{len(visited):>3}] {url}")
-        row, links = scrape(url)
+    if data:
+        count += 1
+        # Page title as Heading 1
+        doc.add_heading(data["title"] or url, level=1)
 
-        if row:
-            writer.writerow(row)
-            f.flush()
-            rows.append(row)
+        # URL in grey
+        p = doc.add_paragraph()
+        run = p.add_run(data["url"])
+        run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        run.font.size = Pt(9)
 
-        for link in links:
-            if link not in visited:
-                queue.append(link)
+        # Meta description
+        if data["meta_desc"]:
+            p2 = doc.add_paragraph()
+            p2.add_run("Description: ").bold = True
+            p2.add_run(data["meta_desc"])
 
-        time.sleep(DELAY)
+        # H1 / H2s
+        if data["h1"]:
+            doc.add_heading(data["h1"], level=2)
+        for h2 in data["h2s"]:
+            doc.add_heading(h2, level=3)
 
-print(f"\nDone — {len(rows)} pages written to {OUT}")
+        # Body text
+        doc.add_paragraph(data["body"][:5000])
+        doc.add_page_break()
+
+    for link in links:
+        if link not in visited:
+            queue.append(link)
+
+    time.sleep(DELAY)
+
+doc.save(OUT)
+print(f"\nDone — {count} pages written to {OUT}")
