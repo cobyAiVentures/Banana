@@ -2,14 +2,25 @@
 Crawl fleetio.com and export every page's content to fleetio_pages.docx
 Each page gets a section with heading, URL, meta description, and body text.
 """
-import re, time
+import re, sys, time
 from collections import deque
 from urllib.parse import urljoin, urlparse
 
-import requests
-from bs4 import BeautifulSoup
-from docx import Document
-from docx.shared import Pt, RGBColor
+try:
+    import requests
+except ImportError:
+    sys.exit("Missing dependency. Run:  pip install requests")
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    sys.exit("Missing dependency. Run:  pip install beautifulsoup4")
+
+try:
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+except ImportError:
+    sys.exit("Missing dependency. Run:  pip install python-docx")
 
 DOMAIN = "fleetio.com"
 START  = "https://www.fleetio.com/"
@@ -46,9 +57,9 @@ def clean(text):
 def scrape(url):
     try:
         r = session.get(url, timeout=15, allow_redirects=True)
+        r.raise_for_status()
         if "text/html" not in r.headers.get("Content-Type", ""):
             return None, []
-        r.raise_for_status()
     except Exception as e:
         print(f"  SKIP {url}: {e}")
         return None, []
@@ -79,59 +90,64 @@ def scrape(url):
 
 # ── Build the Word document ──────────────────────────────────────────────────
 
-doc = Document()
-doc.core_properties.title = "Fleetio.com — Full Site Content"
+def main():
+    doc = Document()
+    doc.core_properties.title = "Fleetio.com — Full Site Content"
 
-# Cover heading
-doc.add_heading("Fleetio.com — Full Site Content", 0)
-doc.add_paragraph(f"Scraped {time.strftime('%Y-%m-%d')}")
-doc.add_page_break()
+    # Cover heading
+    doc.add_heading("Fleetio.com — Full Site Content", 0)
+    doc.add_paragraph(f"Scraped {time.strftime('%Y-%m-%d')}")
+    doc.add_page_break()
 
-visited = set()
-queue   = deque([START])
-count   = 0
+    visited = set()
+    queue   = deque([START])
+    count   = 0
 
-while queue and len(visited) < MAX:
-    url = queue.popleft()
-    if url in visited:
-        continue
-    visited.add(url)
+    while queue and len(visited) < MAX:
+        url = queue.popleft()
+        if url in visited:
+            continue
+        visited.add(url)
 
-    print(f"[{len(visited):>3}] {url}")
-    data, links = scrape(url)
+        print(f"[{len(visited):>3}] {url}")
+        data, links = scrape(url)
 
-    if data:
-        count += 1
-        # Page title as Heading 1
-        doc.add_heading(data["title"] or url, level=1)
+        if data:
+            count += 1
+            # Page title as Heading 1
+            doc.add_heading(data["title"] or url, level=1)
 
-        # URL in grey
-        p = doc.add_paragraph()
-        run = p.add_run(data["url"])
-        run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        run.font.size = Pt(9)
+            # URL in grey
+            p = doc.add_paragraph()
+            run = p.add_run(data["url"])
+            run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+            run.font.size = Pt(9)
 
-        # Meta description
-        if data["meta_desc"]:
-            p2 = doc.add_paragraph()
-            p2.add_run("Description: ").bold = True
-            p2.add_run(data["meta_desc"])
+            # Meta description
+            if data["meta_desc"]:
+                p2 = doc.add_paragraph()
+                p2.add_run("Description: ").bold = True
+                p2.add_run(data["meta_desc"])
 
-        # H1 / H2s
-        if data["h1"]:
-            doc.add_heading(data["h1"], level=2)
-        for h2 in data["h2s"]:
-            doc.add_heading(h2, level=3)
+            # H1 / H2s
+            if data["h1"]:
+                doc.add_heading(data["h1"], level=2)
+            for h2 in data["h2s"]:
+                doc.add_heading(h2, level=3)
 
-        # Body text
-        doc.add_paragraph(data["body"][:5000])
-        doc.add_page_break()
+            # Body text
+            doc.add_paragraph(data["body"][:5000])
+            doc.add_page_break()
 
-    for link in links:
-        if link not in visited:
-            queue.append(link)
+        for link in links:
+            if link not in visited:
+                queue.append(link)
 
-    time.sleep(DELAY)
+        time.sleep(DELAY)
 
-doc.save(OUT)
-print(f"\nDone — {count} pages written to {OUT}")
+    doc.save(OUT)
+    print(f"\nDone — {count} pages written to {OUT}")
+
+
+if __name__ == "__main__":
+    main()
